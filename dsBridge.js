@@ -1,7 +1,10 @@
-const dsBridge = {
+const bridge = {
     call: function (method, args, callback) {
         let params = {data: args === undefined ? null : args}
         if (callback != null && typeof callback == 'function') {
+            if (!window.callID) {
+                window.callID = 0
+            }
             const callName = "dscall" + (window.callID++)
             window[callName] = callback
             params["_dscbstub"] = callName
@@ -9,7 +12,7 @@ const dsBridge = {
         let paramsStr = JSON.stringify(params)
         let res = ""
         if (window._dsbridge){
-            res = window._dsbridge.call(method, paramsStr)
+             res = window._dsbridge.call(method, paramsStr)
         }
         return JSON.parse(res).data
     },
@@ -17,6 +20,11 @@ const dsBridge = {
         if (window._dsaf && window._dsf){
             let obj = async ? window._dsaf : window._dsf
             obj[method] = func
+            if (typeof func == "object") {
+                obj._obs[method] = func;
+            } else {
+                obj[method] = func;
+            }
         }
 
     },
@@ -25,19 +33,27 @@ const dsBridge = {
     },
     registerAsync: function (method, func) {
         this.register(method, func, true)
-    }
+    },
+    hasNativeMethod: function (method) {
+        return this.call("_dsb.hasNativeMethod", {name: method})
+    },
+    close: function () {
+        this.call("_dsb.closePage")
+    },
 };
 
 (function (){
     const manager = {
-        // 存储js注册的同步函数
         _dsf: {
             _obs: {}
-        }, // 存储js注册的异步函数
+        },
         _dsaf: {
             _obs: {}
         },
-        bridge: dsBridge,
+        dsBridge: bridge,
+        close: function () {
+            bridge.close()
+        },
         _handleMessageFromNative: function (info) {
 
             let arg = JSON.parse(info.data);
@@ -48,13 +64,13 @@ const dsBridge = {
             let af = this._dsaf[info.method]
             let callSyn = function (f, ob) {
                 ret.data = f.apply(ob, arg)
-                this.bridge.call("_dsb.returnValue", ret)
+                bridge.call("_dsb.returnValue", ret)
             }
             let callAsync = function (f, ob) {
                 arg.push(function (data, complete) {
                     ret.data = data;
                     ret.complete = complete !== false;
-                    this.bridge.call("_dsb.returnValue", ret)
+                    bridge.call("_dsb.returnValue", ret)
                 })
                 f.apply(ob, arg)
             }
@@ -62,6 +78,26 @@ const dsBridge = {
                 callSyn(f, this._dsf);
             } else if (af) {
                 callAsync(af, this._dsaf);
+            }else {
+                // namespace
+                let name = info.method.split('.');
+                if (name.length<2) return;
+                let method=name.pop();
+                let namespace=name.join('.')
+                let obs = this._dsf._obs;
+                let ob = obs[namespace] || {};
+                let m = ob[method];
+                if (m && typeof m == "function") {
+                    callSyn(m, ob);
+                    return;
+                }
+                obs = this._dsaf._obs;
+                ob = obs[namespace] || {};
+                m = ob[method];
+                if (m && typeof m == "function") {
+                    callAsync(m, ob);
+                    return;
+                }
             }
         }
     }
@@ -70,5 +106,22 @@ const dsBridge = {
         window[attr] = manager[attr]
         console.log(attr)
     }
+
+    dsBridge.register("_hasJavascriptMethod", (method) => {
+        const name = method.split('.')
+        if (name.length < 2) {
+            return !!(_dsf[name] || _dsaf[name])
+        } else {
+            // namespace
+            let method = name.pop()
+            let namespace = name.join('.')
+            let ob = _dsf._obs[namespace] || _dsaf._obs[namespace]
+            return ob && !!ob[method]
+        }
+    })
+
 })();
+
+// module.exports = dsBridge;
+// export default dsBridge;
 
